@@ -23,7 +23,7 @@ local Size            = require("ui/size")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
-local _               = require("gettext")
+local _               = require("i18n")
 local T               = require("ffi/util").template
 
 local ScreenBase        = lrequire_common("screen_base")
@@ -214,16 +214,29 @@ function TapaScreen:onToggleReveal()
 end
 
 function TapaScreen:showRulesHint()
-    self:showMessage(_(
-        "Tapa rules:\n" ..
-        "Shade cells to form one connected wall.\n\n" ..
-        "Clue cells (white with numbers) are never shaded.\n" ..
-        "For each clue, the numbers describe the lengths of\n" ..
-        "consecutive shaded groups among its 8 neighbors.\n\n" ..
-        "No 2\xC3\x972 block of shaded cells is allowed.\n\n" ..
-        "Tap: shade / unshade a cell.\n" ..
-        "Check: highlights incorrect cells."
-    ), 12)
+    if _.lang() == "fr" then
+        self:showMessage(
+            "Règles Tapa :\n" ..
+            "Noircissez des cases pour former un seul mur connecté.\n\n" ..
+            "Les cases indices (blanches avec chiffres) ne sont jamais noircies.\n" ..
+            "Pour chaque indice, les chiffres décrivent les longueurs des groupes\n" ..
+            "consécutifs de cases noires parmi ses 8 voisines.\n\n" ..
+            "Aucun carré 2\xC3\x972 de cases noircies n'est autorisé.\n\n" ..
+            "Appuyez : noircir/dénoircir une case.\n" ..
+            "Vérifier : met en évidence les cases incorrectes."
+        , 12)
+    else
+        self:showMessage(_(
+            "Tapa rules:\n" ..
+            "Shade cells to form one connected wall.\n\n" ..
+            "Clue cells (white with numbers) are never shaded.\n" ..
+            "For each clue, the numbers describe the lengths of\n" ..
+            "consecutive shaded groups among its 8 neighbors.\n\n" ..
+            "No 2\xC3\x972 block of shaded cells is allowed.\n\n" ..
+            "Tap: shade / unshade a cell.\n" ..
+            "Check: highlights incorrect cells."
+        ), 12)
+    end
 end
 
 function TapaScreen:openGridMenu()
