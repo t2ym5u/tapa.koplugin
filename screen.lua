@@ -47,7 +47,7 @@ Rules:
 • All shaded cells must form one orthogonally connected group.
 • No 2×2 area may be entirely shaded.
 
-Tap a cell to shade it. Tap again to unshade.
+Tap a cell to shade it. Tap again to unshade. Check highlights incorrect cells.
 ]])
 
 local GAME_RULES_FR = [[
@@ -62,7 +62,7 @@ Règles :
 • Toutes les cases noircies doivent former un seul groupe orthogonalement connecté.
 • Aucun carré 2×2 ne peut être entièrement noirci.
 
-Appuyez sur une case pour la noircir. Appuyez à nouveau pour la dénoircir.
+Appuyez sur une case pour la noircir. Appuyez à nouveau pour la dénoircir. Vérifier met en évidence les cases incorrectes.
 ]]
 
 local TapaScreen = ScreenBase:extend{}
@@ -105,26 +105,15 @@ function TapaScreen:buildLayout()
         and math.max(right_panel_width - Size.span.horizontal_default, 100)
         or  math.floor(sw * 0.9)
 
-    local top_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {
-            {
-                { text = _("New"),   callback = function() self:onNewGame() end },
-                { id   = "grid_button", text = self:getGridButtonText(),
-                  callback = function() self:openGridMenu() end },
-                { id   = "diff_button", text = self:getDiffButtonText(),
-                  callback = function() self:openDifficultyMenu() end },
-                { id   = "reveal_button", text = self:getRevealButtonText(),
-                  callback = function() self:onToggleReveal() end },
-                self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
-                self:makeCloseButtonConfig(),
-            },
-        },
-    }
-    self.grid_button   = top_buttons:getButtonById("grid_button")
-    self.diff_button   = top_buttons:getButtonById("diff_button")
-    self.reveal_button = top_buttons:getButtonById("reveal_button")
+    local title_bar = self:buildTitleBar(_("Tapa"), function()
+        return {
+            { text = _("New game"),            callback = function() self:onNewGame() end },
+            { text = self:getGridButtonText(), callback = function() self:openGridMenu() end },
+            { text = self:getDiffButtonText(), callback = function() self:openDifficultyMenu() end },
+            { text = self:getRevealButtonText(), callback = function() self:onToggleReveal() end },
+            self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+        }
+    end)
 
     local bottom_buttons = ButtonTable:new{
         shrink_unneeded_width = true,
@@ -132,7 +121,6 @@ function TapaScreen:buildLayout()
         buttons = {
             {
                 { text = _("Check"), callback = function() self:onCheck() end },
-                { text = _("Rules"), callback = function() self:showRulesHint() end },
             },
         },
     }
@@ -140,33 +128,26 @@ function TapaScreen:buildLayout()
     if is_landscape then
         local right_panel = VerticalGroup:new{
             align = "center",
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
             VerticalSpan:new{ width = Size.span.vertical_large },
             bottom_buttons,
         }
-        self.layout = HorizontalGroup:new{
+        local content = HorizontalGroup:new{
             align  = "center",
             board_frame,
             HorizontalSpan:new{ width = Size.span.horizontal_default },
             right_panel,
         }
+        self:buildLandscapeLayout(title_bar, content)
     else
-        self.layout = VerticalGroup:new{
+        local content = VerticalGroup:new{
             align = "center",
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             board_frame,
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
         }
+        self:buildPortraitLayout(title_bar, content, bottom_buttons)
     end
-    self[1] = self.layout
     self:updateStatus()
 end
 
@@ -211,32 +192,6 @@ function TapaScreen:onToggleReveal()
         self.reveal_button:setText(self:getRevealButtonText(), self.reveal_button.width)
     end
     self:updateStatus()
-end
-
-function TapaScreen:showRulesHint()
-    if _.lang() == "fr" then
-        self:showMessage(
-            "Règles Tapa :\n" ..
-            "Noircissez des cases pour former un seul mur connecté.\n\n" ..
-            "Les cases indices (blanches avec chiffres) ne sont jamais noircies.\n" ..
-            "Pour chaque indice, les chiffres décrivent les longueurs des groupes\n" ..
-            "consécutifs de cases noires parmi ses 8 voisines.\n\n" ..
-            "Aucun carré 2\xC3\x972 de cases noircies n'est autorisé.\n\n" ..
-            "Appuyez : noircir/dénoircir une case.\n" ..
-            "Vérifier : met en évidence les cases incorrectes."
-        , 12)
-    else
-        self:showMessage(_(
-            "Tapa rules:\n" ..
-            "Shade cells to form one connected wall.\n\n" ..
-            "Clue cells (white with numbers) are never shaded.\n" ..
-            "For each clue, the numbers describe the lengths of\n" ..
-            "consecutive shaded groups among its 8 neighbors.\n\n" ..
-            "No 2\xC3\x972 block of shaded cells is allowed.\n\n" ..
-            "Tap: shade / unshade a cell.\n" ..
-            "Check: highlights incorrect cells."
-        ), 12)
-    end
 end
 
 function TapaScreen:openGridMenu()
