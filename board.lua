@@ -326,12 +326,20 @@ function TapaBoard:new(opts)
     }, self)
 end
 
+-- Retry budget for tryGenerate: raised from 80 after measuring 87-91%
+-- fallback at n=10 (0-3% at n=6/8) — random shading + connectivity-repair
+-- attempts only rarely land on a connected, 2×2-free region at that size, but
+-- each attempt is cheap, so a much higher cap clears the fallback rate to
+-- 0/100 with acceptable worst-case latency (~0.8s) rather than needing a
+-- generation-strategy redesign.
+local GENERATE_MAX_ATTEMPTS = 3000
+
 function TapaBoard:generate(difficulty)
     self.difficulty = difficulty or self.difficulty
     local n = self.n
 
     local solution, clues
-    for attempt = 1, 80 do
+    for attempt = 1, GENERATE_MAX_ATTEMPTS do
         solution, clues = tryGenerate(n, self.difficulty)
         if solution then break end
         if attempt % 20 == 0 then
