@@ -3,5 +3,5 @@ return {
     name        = "tapa",
     fullname    = _("Tapa"),
     description = _("Shade cells to form a connected wall"),
-    version     = "1.1.5",
+    version     = "1.1.6",
 }
