@@ -27,7 +27,7 @@ local C_BG         = Blitbuffer.COLOR_WHITE
 local C_SHADED     = Blitbuffer.COLOR_GRAY_4    -- player-shaded cell
 local C_SOL_SHADED = Blitbuffer.COLOR_BLACK     -- solution-revealed shaded cell
 local C_CLUE_BG    = Blitbuffer.COLOR_WHITE     -- clue cell background (stays white)
-local C_WRONG      = Blitbuffer.COLOR_GRAY_A    -- wrong-mark highlight
+local C_WRONG      = Blitbuffer.COLOR_GRAY    -- wrong-mark highlight
 local C_GRID       = Blitbuffer.COLOR_BLACK
 local C_NUM        = Blitbuffer.COLOR_BLACK
 
