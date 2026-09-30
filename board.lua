@@ -8,6 +8,7 @@ local function lrequire_common(name)
 end
 
 local grid_utils    = lrequire_common("grid_utils")
+local Hint = lrequire_common("hint")
 local emptyGrid     = grid_utils.emptyGrid
 local emptyBoolGrid = grid_utils.emptyBoolGrid
 local copyGrid      = grid_utils.copyGrid
@@ -678,6 +679,16 @@ function TapaBoard:tapCell(r, c)
     self:_checkSolved()
 end
 
+-- Like tapCell(), but sets the state outright. Used by the Hint button.
+function TapaBoard:setCellFilled(r, c, filled)
+    if r < 1 or r > self.n or c < 1 or c > self.n then return false end
+    if self:isClue(r, c) then return false end
+    self.user[r][c]  = filled and true or false
+    self.wrong[r][c] = false
+    self:_checkSolved()
+    return true
+end
+
 function TapaBoard:_checkSolved()
     local n = self.n
     -- Quick check: user matches solution
@@ -752,6 +763,16 @@ end
 function TapaBoard:isShowingSolution()
     return self.reveal
 end
+
+-- user/solution are plain booleans, and false doubles as "not filled", which
+-- is exactly the default notion of empty.
+Hint.install(TapaBoard, {
+    getUser     = function(b, r, c) return b.user[r][c] end,
+    getSolution = function(b, r, c) return b.solution[r][c] end,
+    isGiven     = function(b, r, c) return b:isClue(r, c) end,
+    setCell     = function(b, r, c, v) return b:setCellFilled(r, c, v) end,
+    blank       = false,
+})
 
 function TapaBoard:serialize()
     local n = self.n
