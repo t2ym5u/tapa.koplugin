@@ -16,6 +16,7 @@ Shade cells black to form a single connected group. Numbered clue cells (never s
 - **Three difficulty levels** — Easy, Medium, Hard
 - **Clue highlighting** — tap a clue cell to see its affected region
 - **Check** — validates connectivity and number constraints
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Auto-save** — puzzle state saved and restored on next launch
 
 ## Installation

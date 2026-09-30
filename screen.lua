@@ -123,6 +123,7 @@ function TapaScreen:buildLayout()
         buttons = {
             {
                 { text = _("Check"), callback = function() self:onCheck() end },
+                { text = _("Hint"), callback = function() self:onHint() end },
             },
         },
     }
