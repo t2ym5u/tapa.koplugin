@@ -14,8 +14,6 @@ local function lrequire_common(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -30,8 +28,6 @@ local ScreenBase        = lrequire_common("screen_base")
 local MenuHelper        = lrequire_common("menu_helper")
 local TapaBoard         = lrequire("board")
 local TapaBoardWidget   = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 local GRID_SIZES = TapaBoard.SIZES
 
@@ -83,29 +79,7 @@ function TapaScreen:serializeState()
 end
 
 function TapaScreen:buildLayout()
-    local sw           = DeviceScreen:getWidth()
     local is_landscape = self:isLandscape()
-
-    self.board_widget = TapaBoardWidget:new{
-        board        = self.board,
-        onCellAction = function(r, c)
-            self:onCellAction(r, c)
-        end,
-    }
-
-    local board_frame = FrameContainer:new{
-        padding = Size.padding.large,
-        margin  = Size.margin.default,
-        self.board_widget,
-    }
-
-    local board_frame_size  = self.board_widget.size + (Size.padding.large + Size.margin.default) * 2
-    local right_panel_width = sw - board_frame_size - Size.span.horizontal_default
-    local button_width = is_landscape
-        and math.max(right_panel_width - Size.span.horizontal_default, 100)
-        or  math.floor(sw * 0.9)
-
-    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
 
     local title_bar = self:buildTitleBar(_("Tapa"), function()
         return {
@@ -117,39 +91,48 @@ function TapaScreen:buildLayout()
         }
     end)
 
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {
-            {
-                { text = _("Check"), callback = function() self:onCheck() end },
-                { text = _("Hint"), callback = function() self:onHint() end },
-            },
-        },
+    -- Controls first: the board is sized from whatever room they leave.
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local action_bar = self:buildActionBar({
+        { text = _("Check"), callback = function() self:onCheck() end },
+        { text = _("Hint"), callback = function() self:onHint() end },
+    })
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        action_bar,
+    }
+
+    -- The widget draws its own thick outer border, so the frame only pads.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
+    self.board_widget = TapaBoardWidget:new{
+        board        = self.board,
+        max_size     = math.min(budget_w, budget_h) - frame_extra,
+        onCellAction = function(r, c)
+            self:onCellAction(r, c)
+        end,
+    }
+    local board_frame = FrameContainer:new{
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
+        self.board_widget,
     }
 
     if is_landscape then
-        local right_panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
-            align  = "center",
+            align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right_panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -164,6 +147,17 @@ function TapaScreen:onCellAction(r, c)
     else
         self:updateStatus()
     end
+    self:refreshActionBar()
+end
+
+function TapaScreen:isRoundOver()
+    return self.board.solved
+end
+
+-- A hint can place the last cell, so the round may end here.
+function TapaScreen:onHint()
+    ScreenBase.onHint(self)
+    self:refreshActionBar()
 end
 
 function TapaScreen:onNewGame()
@@ -203,7 +197,7 @@ function TapaScreen:openGridMenu()
         sizes[#sizes+1] = { id = sz, text = sz .. "\xC3\x97" .. sz }
     end
     MenuHelper.openSizeMenu{
-        title     = _("Select grid size"),
+        title     = _("Select size"),
         sizes     = sizes,
         current   = self.plugin:getSetting("grid_n", TapaBoard.DEFAULT_N),
         parent    = self,
@@ -244,24 +238,25 @@ function TapaScreen:updateStatus(msg)
         local clues   = self.board:countClues()
         local diff    = self.plugin:getSetting("difficulty", TapaBoard.DEFAULT_DIFFICULTY)
         local label   = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-        status = T(_("%1\xC3\x97%2 \xC2\xB7 %3 \xC2\xB7 Shaded: %4/%5 \xC2\xB7 Clues: %6"),
-            self.board.n, self.board.n, label, shaded, sol, clues)
+        status = self:joinStatus(
+            T("%1×%1", self.board.n), label,
+            T(_("Shaded: %1/%2"), shaded, sol), T(_("Clues: %1"), clues))
     end
     ScreenBase.updateStatus(self, status)
 end
 
 function TapaScreen:getGridButtonText()
-    return T(_("Grid: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
+    return T(_("Size: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
 end
 
 function TapaScreen:getDiffButtonText()
     local diff  = self.plugin:getSetting("difficulty", TapaBoard.DEFAULT_DIFFICULTY)
     local label = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-    return T(_("Diff: %1"), label)
+    return T(_("Difficulty: %1"), label)
 end
 
 function TapaScreen:getRevealButtonText()
-    return self.board:isShowingSolution() and _("Hide") or _("Show")
+    return self.board:isShowingSolution() and _("Hide solution") or _("Show solution")
 end
 
 return TapaScreen
