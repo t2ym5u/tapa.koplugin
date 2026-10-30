@@ -33,7 +33,7 @@ Shade cells black to form a single connected group. Numbered clue cells (never s
 | Shade a cell | Tap it |
 | Unshade a cell | Tap it again |
 | Check progress | Tap **Check** |
-| New puzzle | Tap **New** |
+| New puzzle | Tap **New game** |
 | Show rules | Tap **Rules** |
 
 ## License
