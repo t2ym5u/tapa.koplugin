@@ -269,6 +269,61 @@ local function generateShading(n)
     return shaded
 end
 
+-- Grows the shading as one connected region instead: start from a random
+-- cell, keep shading a random cell next to the region unless it would
+-- complete a 2x2 block (a cell rejected once stays rejected -- shading
+-- more can only add blocks), until the same 40% density. Connected and
+-- 2x2-free by construction, so it never fails. Used from 10x10 up, where
+-- generateShading's scatter-then-bridge only connects ~1 time in 1250
+-- (1.5.0: about 0.2 s of retries per 10x10 puzzle on a desktop, seconds
+-- on an e-reader); 6x6 and 8x8 keep generateShading so their puzzles stay
+-- the same per seed.
+local function growShading(n)
+    local shaded = emptyBoolGrid(n)
+    local target = math.floor(n * n * 0.40)
+    local queued = emptyBoolGrid(n)
+    local frontier = {}
+    local function push(r, c)
+        if not queued[r][c] then
+            queued[r][c] = true
+            frontier[#frontier + 1] = { r, c }
+        end
+    end
+    push(math.random(n), math.random(n))
+    local count = 0
+    while count < target and #frontier > 0 do
+        local idx = math.random(#frontier)
+        local cell = frontier[idx]
+        frontier[idx] = frontier[#frontier]
+        frontier[#frontier] = nil
+        local r, c = cell[1], cell[2]
+        local blocks = false
+        for dr = -1, 0 do
+            for dc = -1, 0 do
+                local r1, c1 = r + dr, c + dc
+                if r1 >= 1 and r1 + 1 <= n and c1 >= 1 and c1 + 1 <= n then
+                    local others = 0
+                    for _, q in ipairs({ { r1, c1 }, { r1, c1 + 1 }, { r1 + 1, c1 }, { r1 + 1, c1 + 1 } }) do
+                        if shaded[q[1]][q[2]] then others = others + 1 end
+                    end
+                    if others == 3 then blocks = true end
+                end
+            end
+        end
+        if not blocks then
+            shaded[r][c] = true
+            count = count + 1
+            for _, d in ipairs(DIRS4) do
+                local nr, nc = r + d[1], c + d[2]
+                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and not shaded[nr][nc] then
+                    push(nr, nc)
+                end
+            end
+        end
+    end
+    return shaded
+end
+
 -- Picks clue cells (non-shaded cells adjacent to >=1 shaded neighbor) at
 -- the given ratio of all such candidates. Repicking which candidates
 -- become clues for the SAME shading -- especially at a HIGHER ratio -- is
@@ -322,171 +377,155 @@ end
 -- 4-adjacency, no 2x2 all-shaded block, every clue cell fixed unshaded and
 -- matching its own group clue exactly) consistent with the shown clues?
 --
--- Backtracking over non-clue cells, ordered clue-by-clue (finish ALL of
--- one clue's 8 neighbors before starting the next -- distance-based
--- ordering processes every clue's ring in parallel, so none of them
--- actually completes, and triggers its exact-match check, until deep into
--- the search). Two pruning rules beyond the per-cell 2x2/clue checks:
---   - once a clue's 8 neighbors are all decided, its group-match is
---     checked immediately;
---   - after any cell is decided UNSHADED, check whether the "maybe-
---     shaded" (shaded-or-still-undecided) cells split into 2+ connected
---     components that EACH already anchor a confirmed-shaded cell -- those
---     can never be reconciled, so the branch is dead. (A weaker, unsound
---     version of this check -- requiring the ENTIRE maybe-shaded set to
---     stay one component, not just the confirmed-shaded anchors -- was
---     tried first and wrongly rejected valid partial assignments where an
---     isolated pocket of merely-undecided cells was always going to
---     resolve to all-unshaded anyway; caught via the standard sanity
---     check returning solutions=0 for the generator's own known-good
---     layout at n=10.)
--- Full connectivity is otherwise only verified once every cell is
--- decided.
+-- Backtracking with propagation to a fixpoint at every node; each rule
+-- only forces what every solution extending the current partial grid
+-- shares, so solutions are counted exactly:
+--   - clue: every 8-cell ring pattern matching the clue's groups is listed
+--     once up front (off-grid neighbours count as unshaded); a ring cell
+--     on which all patterns still compatible with the decided cells agree
+--     takes that value, and no compatible pattern left is a contradiction.
+--   - 2x2: a block with three shaded cells has its fourth unshaded.
+--   - connectivity: among the "maybe-shaded" (shaded or undecided) 4-
+--     connected components, two holding a shaded cell can never be
+--     reconciled (dead branch), and once some cell is shaded the
+--     components holding none can only end up unshaded.
+-- The search branches on a ring cell of the clue with the fewest patterns
+-- left, else the first undecided cell. Cell state: 0 undecided, 1 shaded,
+-- 2 unshaded. node_budget counts search nodes, so a seed gives the same
+-- verdict on every device.
+-- 1.5.0: replaces a cell-by-cell backtracker that checked a clue only once
+-- its whole ring was decided (up to 2 s at 10x10 on a desktop, nearly a
+-- minute on an e-reader).
 -- ---------------------------------------------------------------------------
 
+-- RING_PATTERNS[key] = list of 8-value rings (1 shaded / 2 unshaded, in
+-- DIRS8 order) whose groups, sorted descending and joined with ",", are key.
+local RING_PATTERNS = {}
+do
+    for p = 0, 255 do
+        local ring, rest = {}, p
+        for k = 1, 8 do
+            ring[k] = (rest % 2 == 1) and 1 or 2
+            rest = math.floor(rest / 2)
+        end
+        local start
+        for k = 1, 8 do if ring[k] == 2 then start = k; break end end
+        local groups = {}
+        if not start then
+            groups[1] = 8
+        else
+            local run = 0
+            for i = 0, 7 do
+                if ring[(start + i - 1) % 8 + 1] == 1 then
+                    run = run + 1
+                elseif run > 0 then
+                    groups[#groups + 1] = run; run = 0
+                end
+            end
+            if run > 0 then groups[#groups + 1] = run end
+        end
+        table.sort(groups, function(a, b) return a > b end)
+        local key = table.concat(groups, ",")
+        RING_PATTERNS[key] = RING_PATTERNS[key] or {}
+        table.insert(RING_PATTERNS[key], ring)
+    end
+end
+
 local function countSolutions(clues, n, limit, node_budget)
-    local shaded = {}
-    for r = 1, n do shaded[r] = {} end
-
-    local clue_cells = {}
-    for r = 1, n do
-        for c = 1, n do
-            if clues[r][c] then
-                clue_cells[#clue_cells + 1] = { r = r, c = c, groups = clues[r][c] }
-                shaded[r][c] = false
-            end
+    local N = n * n
+    local state = {}
+    for i = 1, N do state[i] = 0 end
+    local nbr4 = {}
+    for r = 1, n do for c = 1, n do
+        local l = {}
+        for _, d in ipairs(DIRS4) do
+            local nr, nc = r + d[1], c + d[2]
+            if nr >= 1 and nr <= n and nc >= 1 and nc <= n then l[#l + 1] = (nr - 1) * n + nc end
         end
-    end
+        nbr4[(r - 1) * n + c] = l
+    end end
+    local blocks = {}
+    for r = 1, n - 1 do for c = 1, n - 1 do
+        local i = (r - 1) * n + c
+        blocks[#blocks + 1] = { i, i + 1, i + n, i + n + 1 }
+    end end
 
-    local order, seen = {}, {}
-    for _, cl in ipairs(clue_cells) do
-        for _, d in ipairs(DIRS8) do
-            local nr, nc = cl.r + d[1], cl.c + d[2]
-            local key = nr * 1000 + nc
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and not clues[nr][nc] and not seen[key] then
-                seen[key] = true
-                order[#order + 1] = { r = nr, c = nc }
+    -- Each clue: its ring (cell index, or false off the grid) and the
+    -- patterns still possible (shrunk per node into a scratch list).
+    local clue_list = {}
+    for r = 1, n do for c = 1, n do
+        if clues[r][c] then
+            local ring = {}
+            for k, d in ipairs(DIRS8) do
+                local nr, nc = r + d[1], c + d[2]
+                ring[k] = (nr >= 1 and nr <= n and nc >= 1 and nc <= n) and ((nr - 1) * n + nc) or false
             end
-        end
-    end
-    for r = 1, n do
-        for c = 1, n do
-            local key = r * 1000 + c
-            if not clues[r][c] and not seen[key] then
-                seen[key] = true
-                order[#order + 1] = { r = r, c = c }
-            end
-        end
-    end
-
-    local solutions, nodes, exhausted = 0, 0, false
-
-    local function violates2x2(r, c)
-        for dr = -1, 0 do
-            for dc = -1, 0 do
-                local r1, r2 = r + dr, r + dr + 1
-                local c1, c2 = c + dc, c + dc + 1
-                if r1 >= 1 and r2 <= n and c1 >= 1 and c2 <= n then
-                    if shaded[r1][c1] and shaded[r1][c2] and shaded[r2][c1] and shaded[r2][c2] then
-                        return true
-                    end
+            local pats = {}
+            for _, p in ipairs(RING_PATTERNS[table.concat(clues[r][c], ",")] or {}) do
+                local ok = true
+                for k = 1, 8 do
+                    if not ring[k] and p[k] == 1 then ok = false; break end
                 end
+                if ok then pats[#pats + 1] = p end
             end
+            clue_list[#clue_list + 1] = { ring = ring, pats = pats, left = #pats }
+            state[(r - 1) * n + c] = 2
         end
-        return false
-    end
+    end end
 
-    local function neighborsAllDecided(cl)
-        for _, d in ipairs(DIRS8) do
-            local nr, nc = cl.r + d[1], cl.c + d[2]
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and shaded[nr][nc] == nil then return false end
-        end
+    local trail, tn = {}, 0
+    local changed = false
+    local function set(i, v)
+        local s = state[i]
+        if s == v then return true end
+        if s ~= 0 then return false end
+        state[i] = v
+        tn = tn + 1; trail[tn] = i
+        changed = true
         return true
     end
-
-    local function checkClue(cl)
-        -- computeClue (the existing production function above) reads
-        -- directly from `shaded`, which already reflects the current
-        -- (possibly partial) state -- only called once neighborsAllDecided
-        -- confirms no nil neighbors remain, so its "nil treated as
-        -- unshaded" default can't affect the result here.
-        local groups = computeClue(shaded, n, cl.r, cl.c)
-        if #groups ~= #cl.groups then return false end
-        for i = 1, #groups do if groups[i] ~= cl.groups[i] then return false end end
-        return true
+    local function undo(mark)
+        while tn > mark do state[trail[tn]] = 0; trail[tn] = nil; tn = tn - 1 end
     end
 
-    local affecting = {}
-    for r = 1, n do affecting[r] = {} end
-    for _, cl in ipairs(clue_cells) do
-        for _, d in ipairs(DIRS8) do
-            local nr, nc = cl.r + d[1], cl.c + d[2]
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n then
-                affecting[nr][nc] = affecting[nr][nc] or {}
-                table.insert(affecting[nr][nc], cl)
+    local cur, any = {}, {}
+    local function cluesProp()
+        for _, cl in ipairs(clue_list) do
+            local ring = cl.ring
+            local free = false
+            for k = 1, 8 do
+                local i = ring[k]
+                local s = i and state[i] or 2
+                cur[k] = s
+                if s == 0 then free = true end
+                any[k] = 0
             end
-        end
-    end
-
-    local function isConnectedFull()
-        local sr, sc
-        for r = 1, n do
-            for c = 1, n do
-                if shaded[r][c] then sr, sc = r, c end
-            end
-            if sr then break end
-        end
-        if not sr then return true end
-        local visited = {}
-        for r = 1, n do visited[r] = {} end
-        local stack = { { sr, sc } }
-        visited[sr][sc] = true
-        local count = 1
-        while #stack > 0 do
-            local cell = table.remove(stack)
-            for _, d in ipairs(DIRS4) do
-                local nr, nc = cell[1] + d[1], cell[2] + d[2]
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and shaded[nr][nc] and not visited[nr][nc] then
-                    visited[nr][nc] = true
-                    count = count + 1
-                    stack[#stack + 1] = { nr, nc }
+            local left = 0
+            for _, p in ipairs(cl.pats) do
+                local ok = true
+                for k = 1, 8 do
+                    local s = cur[k]
+                    if s ~= 0 and s ~= p[k] then ok = false; break end
                 end
-            end
-        end
-        local total = 0
-        for r = 1, n do for c = 1, n do if shaded[r][c] then total = total + 1 end end end
-        return count == total
-    end
-
-    -- See header: only a "maybe-shaded" component that already anchors a
-    -- confirmed-shaded cell is a genuine problem; 2+ such anchored
-    -- components can never be reconciled.
-    local function potentialRegionSingleComponent()
-        local visited = {}
-        for r = 1, n do visited[r] = {} end
-        local components_with_true = 0
-
-        for r = 1, n do
-            for c = 1, n do
-                if shaded[r][c] ~= false and not visited[r][c] then
-                    local stack = { { r, c } }
-                    visited[r][c] = true
-                    local has_true = shaded[r][c] == true
-                    while #stack > 0 do
-                        local cell = table.remove(stack)
-                        for _, d in ipairs(DIRS4) do
-                            local nr, nc = cell[1] + d[1], cell[2] + d[2]
-                            if nr >= 1 and nr <= n and nc >= 1 and nc <= n
-                                and shaded[nr][nc] ~= false and not visited[nr][nc] then
-                                visited[nr][nc] = true
-                                if shaded[nr][nc] == true then has_true = true end
-                                stack[#stack + 1] = { nr, nc }
+                if ok then
+                    left = left + 1
+                    if free then
+                        for k = 1, 8 do
+                            if cur[k] == 0 then
+                                local a = any[k]
+                                if a == 0 then any[k] = p[k] elseif a ~= p[k] then any[k] = 3 end
                             end
                         end
                     end
-                    if has_true then
-                        components_with_true = components_with_true + 1
-                        if components_with_true > 1 then return false end
+                end
+            end
+            if left == 0 then return false end
+            cl.left = left
+            if free then
+                for k = 1, 8 do
+                    local a = any[k]
+                    if cur[k] == 0 and a ~= 3 then
+                        if not set(ring[k], a) then return false end
                     end
                 end
             end
@@ -494,43 +533,106 @@ local function countSolutions(clues, n, limit, node_budget)
         return true
     end
 
-    local function search(idx)
-        if solutions >= limit or exhausted then return end
-        nodes = nodes + 1
-        if nodes > node_budget then exhausted = true; return end
-
-        if idx > #order then
-            if isConnectedFull() then solutions = solutions + 1 end
-            return
+    local function blocksProp()
+        for _, b in ipairs(blocks) do
+            local sh, free = 0, nil
+            for k = 1, 4 do
+                local s = state[b[k]]
+                if s == 1 then sh = sh + 1 elseif s == 0 then free = b[k] end
+            end
+            if sh == 4 then return false end
+            if sh == 3 and free then
+                if not set(free, 2) then return false end
+            end
         end
+        return true
+    end
 
-        local cell = order[idx]
-        local r, c = cell.r, cell.c
-        for _, val in ipairs({ false, true }) do
-            shaded[r][c] = val
-            local ok = true
-            if val and violates2x2(r, c) then ok = false end
-            if ok and affecting[r][c] then
-                for _, cl in ipairs(affecting[r][c]) do
-                    if neighborsAllDecided(cl) and not checkClue(cl) then ok = false; break end
+    local comp, stamp, stack = {}, 0, {}
+    for i = 1, N do comp[i] = 0 end
+    local function regionProp()
+        stamp = stamp + 1
+        local base = stamp
+        local anchored = nil   -- stamp of the one component holding a shaded cell
+        local any_shaded = false
+        for i = 1, N do
+            if state[i] ~= 2 and comp[i] <= base - 1 then
+                -- new maybe-shaded component, labelled with a fresh stamp
+                stamp = stamp + 1
+                local id = stamp
+                local has = false
+                local top = 1
+                stack[1] = i; comp[i] = id
+                while top > 0 do
+                    local j = stack[top]; top = top - 1
+                    if state[j] == 1 then has = true end
+                    for _, k in ipairs(nbr4[j]) do
+                        if state[k] ~= 2 and comp[k] ~= id then
+                            comp[k] = id
+                            top = top + 1; stack[top] = k
+                        end
+                    end
+                end
+                if has then
+                    if anchored then return false end
+                    anchored = id
+                    any_shaded = true
                 end
             end
-            if ok and not val then
-                ok = potentialRegionSingleComponent()
+        end
+        if any_shaded then
+            for i = 1, N do
+                if state[i] == 0 and comp[i] ~= anchored then
+                    if not set(i, 2) then return false end
+                end
             end
-            if ok then search(idx + 1) end
-            shaded[r][c] = nil
+        end
+        return true
+    end
+
+    local function propagate()
+        repeat
+            changed = false
+            if not cluesProp() or not blocksProp() or not regionProp() then return false end
+        until not changed
+        return true
+    end
+
+    local function pickCell()
+        local best, best_left = nil, math.huge
+        for _, cl in ipairs(clue_list) do
+            if cl.left < best_left then
+                for k = 1, 8 do
+                    local i = cl.ring[k]
+                    if i and state[i] == 0 then best, best_left = i, cl.left; break end
+                end
+            end
+        end
+        if best then return best end
+        for i = 1, N do if state[i] == 0 then return i end end
+    end
+
+    local solutions, nodes, exhausted = 0, 0, false
+    local function search()
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return end
+        if not propagate() then return end
+        local i = pickCell()
+        if not i then
+            -- complete: clues, 2x2 and connectivity all hold (propagate)
+            solutions = solutions + 1
+            return
+        end
+        for v = 1, 2 do
+            local mark = tn
+            set(i, v)
+            search()
+            undo(mark)
             if solutions >= limit or exhausted then return end
         end
     end
-
-    search(1)
-    return solutions, exhausted
-end
-
-local function uniquenessNodeBudget(n)
-    if n <= 8 then return 30000 end
-    return 60000
+    search()
+    return solutions, exhausted, nodes
 end
 
 -- ---------------------------------------------------------------------------
@@ -568,7 +670,8 @@ end
 -- redesign. Kept separate from the uniqueness escalation loop below (each
 -- shading attempt now costs up to 9 verification calls, not 1, so reusing
 -- this same cap there would mean up to ~27000 verification calls per
--- generate() -- far too slow).
+-- generate() -- far too slow). Since 1.5.0 only 6x6/8x8 go through this
+-- retry loop; 10x10 uses growShading, which never fails.
 local GENERATE_MAX_ATTEMPTS = 3000
 local SHADING_ATTEMPTS_FOR_UNIQUENESS = 20
 
@@ -589,9 +692,13 @@ local SHADING_ATTEMPTS_FOR_UNIQUENESS = 20
 -- candidate cells become clues is much cheaper than regenerating the
 -- shading, and more clues can only add constraints) before giving up on
 -- that shading and drawing a fresh one.
-local function uniquenessNodeBudget(n)
-    if n <= 8 then return 30000 end
-    return 60000
+-- Search nodes allowed per uniqueness check; running out counts as "not
+-- unique". With the propagation above a unique clue set is proved in under
+-- 100 nodes at every size (measured on 450 puzzles), so this only cuts
+-- short the rare non-unique set that wanders before its second solution
+-- turns up.
+local function uniquenessNodeBudget(n) -- luacheck: ignore n
+    return 1000
 end
 
 -- Multipliers on the nominal ratio. "hard"'s base ratio (0.12) is low
@@ -615,7 +722,7 @@ function TapaBoard:generate(difficulty)
         if solution then break end
         local shaded = nil
         for _ = 1, GENERATE_MAX_ATTEMPTS / SHADING_ATTEMPTS_FOR_UNIQUENESS do
-            shaded = generateShading(n)
+            shaded = n >= 10 and growShading(n) or generateShading(n)
             if shaded then break end
         end
         if shaded then
@@ -869,5 +976,8 @@ function TapaBoard:load(data)
     self.solved = data.solved or false
     return true
 end
+
+-- exposed for the specs
+TapaBoard.countSolutions = countSolutions
 
 return TapaBoard

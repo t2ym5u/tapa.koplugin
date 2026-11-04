@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Much faster puzzle generation: a 10×10 grid took up to 2 s on a desktop
+  (nearly a minute on an e-reader); every size now takes about a
+  hundredth of a second. The uniqueness check deduces forced cells from
+  every clue's possible patterns, 2×2 blocks and connectivity, and 10×10
+  grows its shading as one connected region instead of retrying random
+  shadings about a thousand times. 6×6 and 8×8 puzzles are the same as
+  before for the same seed; 10×10 ones differ (Daily Challenge included).
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed
