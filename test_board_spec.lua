@@ -220,4 +220,46 @@ describe("TapaBoard", function()
             assert.is_false(b:load({}))
         end)
     end)
+    describe("uniqueness check (1.5.0)", function()
+        local function centre(groups)
+            return { {}, { [2] = groups }, {} }
+        end
+
+        it("counts the shadings around a single 3x3 clue", function()
+            assert.are.equal(8, (Board.countSolutions(centre({ 1 }), 3, 100, 1e6)))
+            assert.are.equal(8, (Board.countSolutions(centre({ 2 }), 3, 100, 1e6)))
+            -- two separate cells can't join up: no other cell to shade
+            assert.are.equal(0, (Board.countSolutions(centre({ 1, 1 }), 3, 100, 1e6)))
+            assert.are.equal(1, (Board.countSolutions(centre({ 8 }), 3, 100, 1e6)))
+        end)
+
+        it("every generated puzzle is unique, and generation is fast", function()
+            for _, n in ipairs({ 6, 8, 10 }) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 8 do
+                        math.randomseed(seed * 7919 + n)
+                        local t0 = os.clock()
+                        local b = Board:new{ n = n }
+                        b:generate(diff)
+                        worst = math.max(worst, os.clock() - t0)
+                        assert.is_true(isConnected(b.solution, n))
+                        for r = 1, n - 1 do
+                            for c = 1, n - 1 do
+                                assert.is_false(b.solution[r][c] and b.solution[r + 1][c]
+                                    and b.solution[r][c + 1] and b.solution[r + 1][c + 1] or false)
+                            end
+                        end
+                        local solutions, exhausted = Board.countSolutions(b.clues, n, 2, 1e6)
+                        assert.is_false(exhausted)
+                        assert.are.equal(1, solutions,
+                            ("n=%d diff=%s seed=%d: not unique"):format(n, diff, seed))
+                    end
+                    -- ~16 ms worst on a desktop (10x10 took up to 2 s before
+                    -- 1.5.0); generous for slow CI.
+                    assert.is_true(worst < 1.0, ("n=%d diff=%s took %.2fs"):format(n, diff, worst))
+                end
+            end
+        end)
+    end)
 end)
