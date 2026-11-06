@@ -12,10 +12,16 @@ Shade cells black to form a single connected group. Numbered clue cells (never s
 
 ## Features
 
-- **Multiple grid sizes**
-- **Three difficulty levels** — Easy, Medium, Hard
-- **Clue highlighting** — tap a clue cell to see its affected region
-- **Check** — validates connectivity and number constraints
+- **Three grid sizes** — 6×6, 8×8 and 10×10
+- **Three difficulty levels, no guessing** — every puzzle is solved by
+  deduction alone, which also proves its solution unique:
+  - *Easy* — about 60% of the possible clues; each clue on its own, the
+    2×2 rule and the wall's next cell are enough.
+  - *Medium* — fewer clues; once, you need to look at the whole wall (an
+    area it cannot reach stays empty, a cell every path goes through is
+    shaded).
+  - *Hard* — as few clues, and that whole-wall reasoning two or more times.
+- **Check** — marks the cells that differ from the solution
 - **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Auto-save** — puzzle state saved and restored on next launch
 

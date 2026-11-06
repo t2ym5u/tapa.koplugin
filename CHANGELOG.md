@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-06
+
+### Changed
+- No puzzle needs guessing any more, and the levels are in order. Clues
+  used to be picked at random, then added until a branching search found
+  a single solution: every level ended up showing 75 to 100% of the
+  possible clues, Hard the most, and 3 to 10% of puzzles could only be
+  finished by trial and error. Now a logic solver chooses the clues: it
+  adds one where it gets stuck, then removes every clue it can do
+  without, and a puzzle is kept only if it finishes by deduction alone
+  (which also proves its solution unique).
+- The levels differ by the reasoning they need. Easy: each clue on its
+  own, 2×2 blocks and the wall's next cell are enough, and about 60% of
+  the possible clues are shown. Medium: about 40% of the clues, and once
+  you need the whole wall (an area the wall cannot reach stays empty, a
+  cell every path goes through is shaded). Hard: as few clues, and that
+  whole-wall reasoning two or more times (2.2 / 2.5 / 3.1 times on
+  average on 6×6 / 8×8 / 10×10; measured over 40 puzzles per size).
+- 6×6 and 8×8 shadings are now grown as one region like 10×10 ones:
+  quicker, and generation stays under 0.025 s on a desktop at every size
+  (about 0.6 s on a Kobo; a progress bar shows meanwhile).
+- The same seed gives a different puzzle than in 1.5.2, so the Daily
+  Challenge puzzle changes once.
+
+### Fixed
+- The puzzle counts as solved as soon as the shading keeps every rule,
+  even if it differs from the stored answer (a game saved with an older
+  version may have more than one).
+
 ## [1.5.2] - 2026-11-04
 
 ### Fixed
