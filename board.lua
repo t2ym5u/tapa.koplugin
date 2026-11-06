@@ -7,12 +7,19 @@ local function lrequire_common(name)
     return package.loaded[key]
 end
 
+local function lrequire(name)
+    local key = _dir .. name
+    if not package.loaded[key] then
+        package.loaded[key] = assert(loadfile(_dir .. name .. ".lua"))()
+    end
+    return package.loaded[key]
+end
+
 local grid_utils    = lrequire_common("grid_utils")
 local Hint = lrequire_common("hint")
-local emptyGrid     = grid_utils.emptyGrid
 local emptyBoolGrid = grid_utils.emptyBoolGrid
-local copyGrid      = grid_utils.copyGrid
 local shuffle       = grid_utils.shuffle
+local Solver        = lrequire("solver")
 
 -- ---------------------------------------------------------------------------
 -- Constants
@@ -27,12 +34,25 @@ local DIRS4 = { {-1,0}, {1,0}, {0,-1}, {0,1} }
 -- 8 neighbors (clockwise from top)
 local DIRS8 = { {-1,0},{-1,1},{0,1},{1,1},{1,0},{1,-1},{0,-1},{-1,-1} }
 
--- Difficulty: controls clue density (fraction of cells that become clue cells)
-local DIFF_CONFIG = {
-    easy   = 0.30,  -- 30% of border cells become clues
-    medium = 0.20,
-    hard   = 0.12,
+-- Per difficulty (1.6.0; see buildClues and generate): the solver tier the
+-- puzzle may need (solver.lua: 1 = each clue on its own, 2x2 and local
+-- wall rules; 2 = the whole wall's connectivity) and `steps`, the window
+-- of tier-2 steps it must need (each one forced cell or one cut-off area,
+-- taken one at a time with the simple rules in between): none on Easy,
+-- exactly one on Medium, two or more on Hard. `share`: the share of the
+-- possible clue cells Easy keeps at least (Medium and Hard keep only the
+-- clues they need).
+local LEVELS = {
+    easy   = { tier = 1, steps = { 0, 0 }, share = 0.6 },
+    medium = { tier = 2, steps = { 1, 1 } },
+    hard   = { tier = 2, steps = { 2, math.huge } },
 }
+-- Solution shadings tried per puzzle at most, per size, before the closest
+-- puzzle to the level's window is kept (a measured count: about 1 ms per
+-- shading on 6x6, 3 ms on 10x10 on a desktop, so generation stays under
+-- about 1 s on a Kobo; how often Hard lands inside its window is in the
+-- CHANGELOG). Easy and Medium nearly always stop at the first or second.
+local MAX_SHADINGS = { [6] = 30, [8] = 16, [10] = 12 }
 
 -- ---------------------------------------------------------------------------
 -- Validation helpers
@@ -142,142 +162,13 @@ end
 -- Generator
 -- ---------------------------------------------------------------------------
 
--- Generate a valid shaded region (connected, no 2×2) and pick clue cells.
--- Builds a random shaded region (connected, no 2x2) -- no clues picked yet,
--- see pickClues below. Split out from the old combined tryGenerate so the
--- (cheap) clue-density escalation doesn't need to redo this (comparatively
--- expensive) part each time.
-local function generateShading(n)
-    local density = 0.40  -- target fraction of shaded cells
-    local shaded  = emptyBoolGrid(n)
-
-    -- Random seed shading
-    local cells = {}
-    for r = 1, n do for c = 1, n do cells[#cells+1] = {r,c} end end
-    shuffle(cells)
-
-    local target = math.floor(n * n * density)
-    local count  = 0
-
-    for _, cell in ipairs(cells) do
-        local r, c = cell[1], cell[2]
-        shaded[r][c] = true
-        -- Check: adding this cell would create 2×2?
-        local creates_2x2 = false
-        for dr = -1, 0 do
-            for dc = -1, 0 do
-                local r1, r2 = r+dr, r+dr+1
-                local c1, c2 = c+dc, c+dc+1
-                if r1 >= 1 and r2 <= n and c1 >= 1 and c2 <= n then
-                    if shaded[r1][c1] and shaded[r1][c2] and shaded[r2][c1] and shaded[r2][c2] then
-                        creates_2x2 = true
-                    end
-                end
-            end
-        end
-        if creates_2x2 then
-            shaded[r][c] = false
-        else
-            count = count + 1
-            if count >= target then break end
-        end
-    end
-
-    if count == 0 then return nil end
-    if not isConnected(shaded, n) then
-        -- Try to connect: add bridge cells
-        local function addBridge()
-            local components = {}
-            local comp_id = emptyGrid(n, n, 0)
-            local n_comp = 0
-            for r = 1, n do
-                for c = 1, n do
-                    if shaded[r][c] and comp_id[r][c] == 0 then
-                        n_comp = n_comp + 1
-                        local stk = {{r,c}}
-                        comp_id[r][c] = n_comp
-                        components[n_comp] = {{r,c}}
-                        while #stk > 0 do
-                            local cell2 = table.remove(stk)
-                            for _, d in ipairs(DIRS4) do
-                                local nr, nc = cell2[1]+d[1], cell2[2]+d[2]
-                                if nr >= 1 and nr <= n and nc >= 1 and nc <= n
-                                    and shaded[nr][nc] and comp_id[nr][nc] == 0 then
-                                    comp_id[nr][nc] = n_comp
-                                    components[n_comp][#components[n_comp]+1] = {nr,nc}
-                                    stk[#stk+1] = {nr,nc}
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            if n_comp <= 1 then return true end
-            -- Find nearest pair of cells from comp 1 and comp 2
-            local best_dist = math.huge
-            local best_path = nil
-            for _, c1 in ipairs(components[1]) do
-                for _, c2 in ipairs(components[2]) do
-                    local d = math.abs(c1[1]-c2[1]) + math.abs(c1[2]-c2[2])
-                    if d < best_dist then best_dist = d; best_path = {c1, c2} end
-                end
-            end
-            if not best_path then return false end
-            -- Add cells along the Manhattan path
-            local r1, c1_c = best_path[1][1], best_path[1][2]
-            local r2, c2_c = best_path[2][1], best_path[2][2]
-            local function step(a, b)
-                if a < b then return a+1
-                elseif a > b then return a-1
-                else return a end
-            end
-            local tries = 0
-            while (r1 ~= r2 or c1_c ~= c2_c) and tries < 20 do
-                tries = tries + 1
-                if r1 ~= r2 then
-                    r1 = step(r1, r2)
-                else
-                    c1_c = step(c1_c, c2_c)
-                end
-                if not shaded[r1][c1_c] then
-                    shaded[r1][c1_c] = true
-                    -- Check 2x2 constraint
-                    for dr = -1, 0 do
-                        for dc = -1, 0 do
-                            local ra, rb = r1+dr, r1+dr+1
-                            local ca, cb = c1_c+dc, c1_c+dc+1
-                            if ra >= 1 and rb <= n and ca >= 1 and cb <= n then
-                                if shaded[ra][ca] and shaded[ra][cb] and shaded[rb][ca] and shaded[rb][cb] then
-                                    shaded[r1][c1_c] = false
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            return isConnected(shaded, n)
-        end
-        for _ = 1, 5 do
-            if addBridge() then break end
-        end
-    end
-
-    if not isConnected(shaded, n) then return nil end
-    if has2x2(shaded, n) then return nil end
-
-    return shaded
-end
-
--- Grows the shading as one connected region instead: start from a random
+-- The solution shading, grown as one connected region: start from a random
 -- cell, keep shading a random cell next to the region unless it would
 -- complete a 2x2 block (a cell rejected once stays rejected -- shading
--- more can only add blocks), until the same 40% density. Connected and
--- 2x2-free by construction, so it never fails. Used from 10x10 up, where
--- generateShading's scatter-then-bridge only connects ~1 time in 1250
--- (1.5.0: about 0.2 s of retries per 10x10 puzzle on a desktop, seconds
--- on an e-reader); 6x6 and 8x8 keep generateShading so their puzzles stay
--- the same per seed.
+-- more can only add blocks), until 40% of the grid is shaded. Connected
+-- and 2x2-free by construction, so it never fails. (Up to 1.5.x, 6x6 and
+-- 8x8 scattered cells at random and bridged the pieces, which failed most
+-- of the time and cost more than choosing the clues.)
 local function growShading(n)
     local shaded = emptyBoolGrid(n)
     local target = math.floor(n * n * 0.40)
@@ -324,56 +215,123 @@ local function growShading(n)
     return shaded
 end
 
--- Picks clue cells (non-shaded cells adjacent to >=1 shaded neighbor) at
--- the given ratio of all such candidates. Repicking which candidates
--- become clues for the SAME shading -- especially at a HIGHER ratio -- is
--- much cheaper than regenerating the shading itself, and more revealed
--- clues can only add constraints, never remove any -- same lever as
--- shikaku's clue-cell repositioning / lightup's wall-number escalation.
-local function pickClues(shaded, n, ratio)
-    local cand_cells = {}
+-- 1.6.0: the clues are chosen by the logic solver (solver.lua), never by a
+-- fixed share of the cells. Up to 1.5.x a share was picked at random and
+-- raised until a branching search found one solution, which pushed every
+-- level to 75-100% of the possible clues (Hard had the most) and let some
+-- puzzles through that only trial and error could finish.
+--
+-- Every unshaded cell with a shaded neighbour can hold a clue: these are
+-- the candidates, in random order. Their patterns (solver.lua) are listed
+-- once.
+local function clueCandidates(shaded, n)
+    local out = {}
     for r = 1, n do
         for c = 1, n do
             if not shaded[r][c] then
-                local has_shaded_nb = false
-                for _, d in ipairs(DIRS8) do
-                    local nr, nc = r+d[1], c+d[2]
-                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n and shaded[nr][nc] then
-                        has_shaded_nb = true; break
-                    end
-                end
-                if has_shaded_nb then
-                    cand_cells[#cand_cells+1] = {r, c}
+                local groups = computeClue(shaded, n, r, c)
+                if #groups > 0 then
+                    local i = (r - 1) * n + c
+                    out[#out + 1] = { r = r, c = c, i = i, groups = groups,
+                                      pats = Solver.cluePatterns(n, i, groups) }
                 end
             end
         end
     end
-
-    shuffle(cand_cells)
-    local n_clues = math.max(2, math.floor(#cand_cells * ratio))
-    n_clues = math.max(n_clues, math.floor(n * n * 0.08))
-    n_clues = math.min(n_clues, #cand_cells)
-
-    local clues = {}
-    for r = 1, n do clues[r] = {} end
-    for i = 1, n_clues do
-        local r, c = cand_cells[i][1], cand_cells[i][2]
-        local groups = computeClue(shaded, n, r, c)
-        if #groups > 0 then
-            clues[r][c] = groups
-        end
-    end
-
-    return clues
+    shuffle(out)
+    return out
 end
 
+-- The solver problem made of the candidates `list[k]` with keep[k] ~= false.
+local function problemOf(n, list, keep)
+    local P = { n = n, clues = {} }
+    for k, e in ipairs(list) do
+        if not keep or keep[k] then
+            P.clues[#P.clues + 1] = { cell = e.i, pats = e.pats }
+        end
+    end
+    return P
+end
+
+-- Does a clue at e still tell the solver anything in state s (its own
+-- cell, or a cell of its ring, undecided)?
+local function cluesUndecided(e, ring, s)
+    if s[e.i] == 0 then return true end
+    for k = 1, 8 do
+        local j = ring[k]
+        if j and s[j] == 0 then return true end
+    end
+    return false
+end
+
+-- The clues of one shading for a level, or nil when even every candidate
+-- clue leaves the solver stuck (then the shading is dropped).
+--  1. Add clues where the solver is stuck: solve at the level's tier; while
+--     it stops short, show the next candidate that still bears on an
+--     undecided cell and go on from where it stopped (a clue only adds
+--     constraints, so what was deduced stays true).
+--  2. Remove the clues not needed: in random order, hide each clue for good
+--     if the puzzle is still solved from scratch at the level's tier, in no
+--     more steps than the level allows (Easy stops at its share).
+-- Every solve is by deduction only (no trial), so the result is proved to
+-- have exactly one solution. Returns clue list, tier, steps.
+local function buildClues(shaded, n, lv, tick)
+    local cand = clueCandidates(shaded, n)
+    local ring = Solver.geom(n).ring
+    -- Easy starts with its share of the candidates shown
+    local floor = math.floor((lv.share or 0) * #cand)
+    local chosen = {}
+    for k = 1, floor do chosen[k] = cand[k] end
+    local P = problemOf(n, chosen)
+    local st, s, _
+    local nxt = floor + 1
+    while true do
+        tick()
+        st, _, _, s = Solver.solve(P, lv.tier, s)
+        if st == "solved" then break end
+        if st == "contradiction" then return nil end   -- (the shading itself fits every clue)
+        local pick
+        while nxt <= #cand do
+            local e = cand[nxt]
+            nxt = nxt + 1
+            if cluesUndecided(e, ring[e.i], s) then pick = e; break end
+        end
+        if not pick then return nil end
+        chosen[#chosen + 1] = pick
+        P.clues[#P.clues + 1] = { cell = pick.i, pats = pick.pats }
+    end
+    local keep, order = {}, {}
+    for k = 1, #chosen do keep[k] = true; order[k] = k end
+    shuffle(order)
+    local cap, kept = lv.steps[2], #chosen
+    for o = 1, #order do
+        local k = order[o]
+        if kept <= floor then break end
+        keep[k] = false
+        kept = kept - 1
+        tick()
+        local st2, steps
+        st2, _, steps = Solver.solve(problemOf(n, chosen, keep), lv.tier)
+        if st2 ~= "solved" or steps > cap then keep[k] = true; kept = kept + 1 end
+    end
+    local tier, steps
+    st, tier, steps = Solver.solve(problemOf(n, chosen, keep), lv.tier)
+    assert(st == "solved")
+    local clues = {}
+    for r = 1, n do clues[r] = {} end
+    for k, e in ipairs(chosen) do
+        if keep[k] then clues[e.r][e.c] = e.groups end
+    end
+    return clues, tier, steps
+end
 
 -- ---------------------------------------------------------------------------
--- Uniqueness counter. No "given" mask -- clue cells (numbers at a subset
--- of unshaded cells, showing the circular run-length grouping of shaded
--- 8-neighbors) ARE the entire puzzle; the whole shading is unknown, and
--- the win-check is a literal comparison to the stored solution (not
--- rule-based). Uniqueness means: is there only one shading (connected via
+-- Uniqueness counter, by branching search. Since 1.6.0 the generator no
+-- longer uses it (the logic solver in solver.lua proves uniqueness without
+-- guessing); the specs keep it as an independent check of that proof.
+-- No "given" mask -- clue cells (numbers at a subset of unshaded cells,
+-- showing the circular run-length grouping of shaded 8-neighbors) ARE the
+-- entire puzzle; the whole shading is unknown. Uniqueness means: is there only one shading (connected via
 -- 4-adjacency, no 2x2 all-shaded block, every clue cell fixed unshaded and
 -- matching its own group clue exactly) consistent with the shown clues?
 --
@@ -661,112 +619,64 @@ function TapaBoard:new(opts)
     }, self)
 end
 
--- Retry budget for the shading generation itself (connected, no 2x2):
--- raised from 80 after measuring 87-91% fallback at n=10 (0-3% at n=6/8) --
--- random shading + connectivity-repair attempts only rarely land on a
--- connected, 2×2-free region at that size, but each attempt is cheap, so a
--- much higher cap clears the fallback rate to 0/100 with acceptable
--- worst-case latency (~0.8s) rather than needing a generation-strategy
--- redesign. Kept separate from the uniqueness escalation loop below (each
--- shading attempt now costs up to 9 verification calls, not 1, so reusing
--- this same cap there would mean up to ~27000 verification calls per
--- generate() -- far too slow). Since 1.5.0 only 6x6/8x8 go through this
--- retry loop; 10x10 uses growShading, which never fails.
-local GENERATE_MAX_ATTEMPTS = 3000
-local SHADING_ATTEMPTS_FOR_UNIQUENESS = 20
-
--- No "given" mask to dig here -- clue cells ARE the entire puzzle, and the
--- win-check is a literal comparison to the stored solution -- so like
--- hitori/nurikabe/starbattle/lightup this generates+verifies whole
--- candidates instead of digging. Measured pre-fix: severe, real ambiguity
--- (0% unique at every size/difficulty).
---
--- A first attempt just added a uniqueness gate to the existing retry loop
--- (regenerate the whole shading+clue-selection, check, repeat) -- this
--- did NOT work: essentially 0% unique even after all 3000 attempts,
--- because every fresh attempt draws from the SAME distribution at the
--- SAME nominal clue density, and that density is (like hitori's nominal
--- black-cell density) almost never unique on its own -- retrying doesn't
--- change the odds. Fixed the same way as hitori/lightup: escalate the
--- CLUE density in bounded steps for a given shading (repicking which
--- candidate cells become clues is much cheaper than regenerating the
--- shading, and more clues can only add constraints) before giving up on
--- that shading and drawing a fresh one.
--- Search nodes allowed per uniqueness check; running out counts as "not
--- unique". With the propagation above a unique clue set is proved in under
--- 100 nodes at every size (measured on 450 puzzles), so this only cuts
--- short the rare non-unique set that wanders before its second solution
--- turns up.
-local function uniquenessNodeBudget(n) -- luacheck: ignore n
-    return 1000
+-- How far a puzzle needing `steps` tier-2 steps is from its level's window.
+local function missBy(lv, steps)
+    if steps < lv.steps[1] then return lv.steps[1] - steps end
+    if steps > lv.steps[2] then return steps - lv.steps[2] end
+    return 0
 end
 
--- Multipliers on the nominal ratio. "hard"'s base ratio (0.12) is low
--- enough that even 2x isn't close to sufficient (measured 0% unique still
--- at that ceiling) -- the last tier's multiplier is deliberately large
--- enough to hit the 1.0 (reveal every candidate cell) ceiling regardless
--- of the starting difficulty, guaranteeing a maximally-constrained
--- last-resort attempt before giving up on a shading.
-local CLUE_REVEAL_ESCALATION = { 1.0, 1.5, 2.5, 4.5, 10.0 }
+-- Last resort, never seen in practice: a comb (first column plus every
+-- other row) with every candidate clue, proved by the specs to solve at
+-- tier 1 for every size.
+local function combShading(n)
+    local shaded = emptyBoolGrid(n)
+    for r = 1, n do
+        shaded[r][1] = true
+        if r % 2 == 1 then
+            for c = 1, n do shaded[r][c] = true end
+        end
+    end
+    return shaded
+end
 
-function TapaBoard:generate(difficulty)
+-- No "given" mask to dig here -- the clues ARE the puzzle -- so each try
+-- draws a solution shading and lets buildClues choose its clues. The first
+-- puzzle inside the level's window of tier-2 steps wins; after
+-- MAX_SHADINGS tries the closest one is kept. Every puzzle kept is solved
+-- by deduction alone, so it is unique and never needs guessing. Shadings
+-- and tries are counted, never timed: a seed always gives the same puzzle
+-- (the Daily Challenge relies on it).
+-- on_progress (optional): called with a 0..1 fraction as it goes.
+function TapaBoard:generate(difficulty, on_progress)
     self.difficulty = difficulty or self.difficulty
     local n = self.n
-    local node_budget = uniquenessNodeBudget(n)
-    local base_ratio = DIFF_CONFIG[self.difficulty] or DIFF_CONFIG.medium
+    local lv = LEVELS[self.difficulty] or LEVELS[DEFAULT_DIFFICULTY]
+    local solves, typical = 0, n * n
+    local function tick()
+        solves = solves + 1
+        if on_progress then on_progress(solves / (solves + typical)) end
+    end
 
-    local solution, clues
-    local best_solution, best_clues
-
-    for shading_attempt = 1, SHADING_ATTEMPTS_FOR_UNIQUENESS do
-        if solution then break end
-        local shaded = nil
-        for _ = 1, GENERATE_MAX_ATTEMPTS / SHADING_ATTEMPTS_FOR_UNIQUENESS do
-            shaded = n >= 10 and growShading(n) or generateShading(n)
-            if shaded then break end
-        end
-        if shaded then
-            for _, mult in ipairs(CLUE_REVEAL_ESCALATION) do
-                if solution then break end
-                local ratio = math.min(1.0, base_ratio * mult)
-                -- at ratio 1.0 every candidate cell becomes a clue
-                -- regardless of pick order, so repeating is pure waste
-                local sub_attempts = ratio >= 1.0 and 1 or 2
-                for _ = 1, sub_attempts do
-                    local candidate_clues = pickClues(shaded, n, ratio)
-
-                    if not best_solution then
-                        best_solution, best_clues = shaded, candidate_clues
-                    end
-
-                    local solutions, exhausted = countSolutions(candidate_clues, n, 2, node_budget)
-                    if solutions == 1 and not exhausted then
-                        solution, clues = shaded, candidate_clues
-                        break
-                    end
-                end
+    local best
+    for _ = 1, MAX_SHADINGS[n] or MAX_SHADINGS[10] do
+        local shaded = growShading(n)
+        local clues, _, steps = buildClues(shaded, n, lv, tick)
+        if clues then
+            local miss = missBy(lv, steps)
+            if not best or miss < best.miss then
+                best = { solution = shaded, clues = clues, miss = miss }
             end
+            if miss == 0 then break end
         end
     end
-    if not solution then
-        solution, clues = best_solution, best_clues
+    if not best then
+        local shaded = combShading(n)
+        best = { solution = shaded, clues = buildClues(shaded, n, LEVELS.easy, tick) }
     end
 
-    if not solution then
-        -- Fallback: shade left half, one clue cell
-        solution = emptyBoolGrid(n)
-        for r = 1, n do
-            for c = 1, math.floor(n/2) do
-                solution[r][c] = true
-            end
-        end
-        clues = {}
-        for r = 1, n do clues[r] = {} end
-        clues[1][math.floor(n/2)+1] = computeClue(solution, n, 1, math.floor(n/2)+1)
-    end
-
-    self.solution = solution
-    self.clues    = clues
+    self.solution = best.solution
+    self.clues    = best.clues
     self.user     = emptyBoolGrid(n)
     self.wrong    = emptyBoolGrid(n)
     self.reveal   = false
@@ -796,17 +706,29 @@ function TapaBoard:setCellFilled(r, c, filled)
     return true
 end
 
+-- Solved when the shading keeps every rule (1.6.0), not only when it
+-- equals the stored solution: no clue cell shaded, every clue matches its
+-- ring, one connected wall, no 2x2 block. New puzzles have one solution,
+-- but a game saved by an older version may have several, and any of them
+-- wins.
 function TapaBoard:_checkSolved()
     local n = self.n
-    -- Quick check: user matches solution
+    local any = false
     for r = 1, n do
         for c = 1, n do
-            if self.user[r][c] ~= self.solution[r][c] then
-                self.solved = false; return
+            local g = self.clues[r] and self.clues[r][c]
+            if g then
+                if self.user[r][c] then self.solved = false; return end
+                local got = computeClue(self.user, n, r, c)
+                if #got ~= #g then self.solved = false; return end
+                for k = 1, #g do
+                    if got[k] ~= g[k] then self.solved = false; return end
+                end
             end
+            if self.user[r][c] then any = true end
         end
     end
-    self.solved = true
+    self.solved = any and isConnected(self.user, n) and not has2x2(self.user, n)
 end
 
 -- Check user shading against rules, mark wrong cells.
@@ -979,5 +901,6 @@ end
 
 -- exposed for the specs
 TapaBoard.countSolutions = countSolutions
+TapaBoard._computeClue   = computeClue
 
 return TapaBoard

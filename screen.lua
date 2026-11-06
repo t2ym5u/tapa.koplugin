@@ -26,6 +26,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase        = lrequire_common("screen_base")
 local MenuHelper        = lrequire_common("menu_helper")
+local GenProgress       = lrequire_common("gen_progress")
 local TapaBoard         = lrequire("board")
 local TapaBoardWidget   = lrequire("board_widget")
 
@@ -69,7 +70,7 @@ function TapaScreen:init()
     local diff  = self.plugin:getSetting("difficulty", TapaBoard.DEFAULT_DIFFICULTY)
     self.board  = TapaBoard:new{ n = n, difficulty = diff }
     if not self.board:load(state) then
-        self.board:generate(diff)
+        GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     end
     ScreenBase.init(self)
 end
@@ -165,7 +166,7 @@ function TapaScreen:onNewGame()
     local n    = self.plugin:getSetting("grid_n", TapaBoard.DEFAULT_N)
     local diff = self.plugin:getSetting("difficulty", TapaBoard.DEFAULT_DIFFICULTY)
     self.board = TapaBoard:new{ n = n, difficulty = diff }
-    self.board:generate(diff)
+    GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()
     UIManager:setDirty(self, function() return "ui", self.dimen end)
